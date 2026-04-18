@@ -1,6 +1,6 @@
 # SwiftVM
 
-### 🎥 [Click here to watch the SwiftVM Hot-Reload Demo!](https://github.com/jeffasante/SwiftVM/blob/main/assets/how-to-use.mp4)
+![SwiftVM in Action](assets/how-to-use.gif)
 
 A hot-reload engine for native iOS development. Edit Swift logic and UI properties in a text file and see changes appear in the iOS Simulator instantly, without rebuilding the app.
 
