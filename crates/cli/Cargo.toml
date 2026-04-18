@@ -1,0 +1,12 @@
+[package]
+name = "swiftvm-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+vm-core = { path = "../vm-core" }
+hot-reload = { path = "../hot-reload" }
+ffi-bridge = { path = "../ffi-bridge" }
+crossterm = "0.29"
+notify = { workspace = true }
+serde_json = "1.0"

@@ -1,0 +1,7 @@
+# native bridge demo
+
+func main()
+  load_const "swift bridge"
+  native_call foundation.string.uppercased 1
+  return
+end

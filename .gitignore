@@ -1,0 +1,17 @@
+# Rust build artifacts
+target/
+
+# Swift build artifacts
+.build/
+.swiftpm/
+
+# OS metadata
+.DS_Store
+
+# User docs/notes
+swift-dev-vm-blueprint.md
+notes.md
+
+# Application bridge artifacts
+/tmp/swiftvm-state.json
+/tmp/swiftvm-output.txt

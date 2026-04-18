@@ -1,0 +1,21 @@
+# Swift Dev VM demo source
+# Edit this file while `cargo run -p swiftvm-cli` is running.
+# Press `r` for light reload and `R` for hard reload.
+
+state counter:Int=0
+state title:String="Swift Dev VM"
+
+func main()
+  load_global counter
+  load_const 1
+  add
+  store_global counter
+
+  load_const "counter="
+  print
+  load_global counter
+  print
+
+  load_global counter
+  return
+end
