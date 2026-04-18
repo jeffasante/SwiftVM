@@ -2,18 +2,26 @@
 
 ![SwiftVM in Action](assets/how-to-use.gif)
 
-A hot-reload engine for native iOS development. Edit Swift logic and UI properties in a text file and see changes appear in the iOS Simulator instantly, without rebuilding the app.
+A hot-reload engine for native SwiftUI development. Point it at an Xcode project, save a Swift file, and UI strings update in the iOS Simulator within about 100ms — no rebuild required.
+
+## Highlights
+
+- SwiftUI project hot-reload is now the primary workflow
+- Run with ./dev.sh samples/swift/sample-food-truck-main
+- Uses SwiftVMHook.swift plus SwiftVMHookBoot.m for auto-start
+- Pure Rust extraction with incremental per-file cache
+- Skips Xcode backup files and handles label key renames
 
 ## What it does
 
-SwiftVM watches a Swift source file for changes. When you save the file, the engine recompiles it into bytecode, runs it in a lightweight Rust VM, and pushes the updated state to your running iOS app through a shared JSON file. The app picks up the new state within 300ms and the UI updates automatically.
+SwiftVM watches all `.swift` files in your project. On each save it extracts string literals from SwiftUI views using a pure-Rust parser (no subprocess, ~1ms), writes the result to `/tmp/swiftvm-viewconfig.json`, and a lightweight hook inside the running app polls that file every 100ms and patches the live UIKit view hierarchy in place.
 
-This gives you a workflow similar to Flutter hot-reload, but for native SwiftUI apps.
+The result is a Flutter-style hot-reload experience for native SwiftUI apps.
 
 ## Requirements
 
 - macOS with Xcode and iOS Simulator
-- Rust toolchain (cargo)
+- Rust toolchain (`cargo`)
 - Swift toolchain (comes with Xcode)
 
 ## Project structure
@@ -21,187 +29,126 @@ This gives you a workflow similar to Flutter hot-reload, but for native SwiftUI 
 ```
 swift-dev-vm/
   crates/
-    cli/          Rust CLI that runs the VM and watches for file changes
-    vm-core/      The bytecode virtual machine
+    cli/          Rust CLI — file watcher, string extractor, dev server
+    vm-core/      Bytecode virtual machine (single-file mode)
     hot-reload/   Differ, parser, and file watcher
     ffi-bridge/   C ABI bridge for native function calls
   swift/
     Frontend/     Swift-to-bytecode compiler (uses SwiftSyntax)
-  test-reload/    Example iOS app wired to the VM bridge
+  tools/
+    SwiftVMHook.swift     Drop-in hot-reload hook for any Xcode project
+    SwiftVMHookBoot.m     ObjC constructor that auto-starts the hook
+    inject-hook.rb        Injects the hook files into a .xcodeproj target
+  samples/
+    swift/
+      sample-food-truck-main/   Apple WWDC22 Food Truck sample (pre-wired)
   apps/           Demo source files (.swift and .svm)
-  dev.sh          One-command script to build and run everything
+  dev.sh          One-command dev environment launcher
 ```
 
-## Quick start
+## Quick start (SwiftUI project mode)
 
-### 1. Build the Swift frontend (first time only)
+### 1. Add the hook to your Xcode project (one time)
+
+Copy `tools/SwiftVMHook.swift` and `tools/SwiftVMHookBoot.m` into your app target in Xcode. Both files are no-ops in Release builds and on device — they only activate in `DEBUG` Simulator builds.
+
+`dev.sh` does this automatically for projects it recognises.
+
+### 2. Build and run your app in Xcode
+
+Press **Cmd+R** as normal. The hook starts polling as soon as the app launches.
+
+### 3. Start the dev server
 
 ```bash
-xcrun swift build --package-path swift/Frontend
+./dev.sh samples/swift/sample-food-truck-main
 ```
 
-### 2. Run the dev environment
+Or point it at any Xcode project directory:
 
 ```bash
-./dev.sh
+./dev.sh path/to/MyApp
 ```
 
-This script does three things:
-1. Builds the Rust VM engine
-2. Builds and installs the iOS app on the Simulator
-3. Starts the hot-reload dev server watching your source file
+`dev.sh` builds the Rust engine, copies the hook files into the project if needed, and starts the watcher.
 
-### 3. Edit and save
+### 4. Edit and save
 
-Open `test-reload/test-reload/Logic.swift` in your editor. Change any value and save. The Simulator updates automatically.
+Change any string literal in your Swift source — a `.navigationTitle`, `Text(...)`, `Label(...)`, etc. — and save. The Simulator updates within ~100ms. No Xcode rebuild needed.
 
-## How the source file works
+## How it works
 
-The VM watches a single Swift file. This file contains two kinds of declarations:
+1. On startup the CLI scans every `.swift` file in the project and builds an in-memory cache of all UI string literals.
+2. The file watcher detects saves. Xcode backup files (`Foo~.swift`) are ignored.
+3. Only the changed file is re-parsed (~1ms, pure Rust string extraction — no subprocess).
+4. The updated JSON is written to `/tmp/swiftvm-viewconfig.json` only if content changed.
+5. `SwiftVMHook` polls that file every 100ms. On a change it walks the live UIKit view hierarchy and patches matching `UILabel` text in place.
+6. Key renames (e.g. changing `Label("Orders")` to `Label("My Orders")`) are detected as prefix matches and applied correctly.
 
-**State variables** define values the iOS app can read:
+## Supported SwiftUI string properties
 
-```swift
-var titleText = "My App"
-var titleColor = "blue"
-var padding = "30"
-var count = 42
-```
+The extractor recognises these eight patterns in any `.swift` file:
 
-**Functions** define logic the VM executes:
+| Pattern | Key format |
+|---|---|
+| `.navigationTitle("…")` | `Struct.navigationTitle` |
+| `.navigationSubtitle("…")` | `Struct.navigationSubtitle` |
+| `Text("…")` | `Struct.Text.value` |
+| `Label("…", …)` | `Struct.Label.value` |
+| `.badge("…")` | `Struct.badge.value` |
+| `.accessibilityLabel("…")` | `Struct.accessibilityLabel.value` |
+| `.confirmationDialog("…")` | `Struct.confirmationDialog.value` |
+| `.alert("…")` | `Struct.alert.value` |
 
-```swift
-func main() -> String {
-    return titleText
-}
-```
+## Adding the hook to a new project manually
 
-Every variable you declare becomes available in the iOS app through the bridge. You do not need to register them anywhere. Just add a `var` line, save the file, and read it from the app.
+If `dev.sh` doesn't auto-inject, add the files yourself:
 
-## Using the bridge in your iOS app
+1. Drag `tools/SwiftVMHook.swift` and `tools/SwiftVMHookBoot.m` into your app target in Xcode (tick "Add to target").
+2. Build and run in the Simulator.
+3. Run `./dev.sh path/to/YourProject`.
 
-### 1. Add the bridge file
-
-Copy `SwiftVMBridge.swift` into your Xcode project. This is the only file you need from this repo.
-
-### 2. Create the bridge in your App struct
-
-```swift
-import SwiftUI
-
-@main
-struct MyApp: App {
-    @StateObject private var vm = SwiftVMBridge()
-
-    var body: some Scene {
-        WindowGroup {
-            ContentView()
-                .environmentObject(vm)
-        }
-    }
-}
-```
-
-### 3. Read values in your views
-
-```swift
-struct ContentView: View {
-    @EnvironmentObject var vm: SwiftVMBridge
-
-    var body: some View {
-        VStack(spacing: CGFloat(vm.int("spacing", default: 20))) {
-            Text(vm.string("titleText"))
-                .font(.system(size: CGFloat(vm.int("titleSize", default: 28))))
-
-            Text(vm.string("subtitle"))
-                .foregroundColor(.secondary)
-
-            Text("Count: \(vm.int("count"))")
-        }
-        .padding(CGFloat(vm.int("padding", default: 20)))
-    }
-}
-```
-
-### Available accessors
-
-| Method | Returns | Example |
-|---|---|---|
-| `vm.string("key")` | String | `vm.string("title")` |
-| `vm.string("key", default: "fallback")` | String | `vm.string("title", default: "Hello")` |
-| `vm.int("key")` | Int | `vm.int("count")` |
-| `vm.int("key", default: 0)` | Int | `vm.int("padding", default: 20)` |
-| `vm.double("key")` | Double | `vm.double("opacity")` |
-| `vm.double("key", default: 1.0)` | Double | `vm.double("opacity", default: 1.0)` |
-
-The bridge polls `/tmp/swiftvm-state.json` every 300ms. When values change, `@Published` triggers a SwiftUI view update. You do not need to call reload manually.
+No other code changes are required. The hook self-starts via the ObjC `__attribute__((constructor))` in `SwiftVMHookBoot.m`.
 
 ## CLI controls
 
-When the dev server is running, you can type these keys:
+When the dev server is running:
 
 | Key | Action |
 |---|---|
-| `r` | Light reload. Recompiles the source and patches changed functions. Preserves state. |
-| `R` | Hard reload. Recompiles and resets all state to defaults. |
-| `a` | Toggle auto-reload on file save. On by default. |
-| `q` | Quit the dev server. |
+| `r` | Light reload (recompile + patch, preserve state) |
+| `R` | Hard reload (recompile + reset state) |
+| `a` | Toggle auto-reload on save |
+| `q` | Quit |
 
-## Running without the dev script
-
-If you prefer to run things separately:
-
-**Build the engine:**
+## Running without dev.sh
 
 ```bash
+# Build the engine
 cargo build -p swiftvm-cli
+
+# Watch a project directory
+cargo run -p swiftvm-cli -- path/to/MyApp
+
+# Watch a single .swift or .svm file
+cargo run -p swiftvm-cli -- apps/demo/main.svm
 ```
 
-**Install and launch the iOS app:**
+## Single-file mode (VM bytecode)
 
-```bash
-test-reload/run-sim.sh
-```
+For `.svm` or simple `.swift` files the CLI also runs a full bytecode VM:
 
-**Start the dev server:**
+- Top-level `var` declarations (string, integer, boolean)
+- `func name() -> Type { }` with local `let`/`var`, arithmetic, `if/else`, `for` loops
+- `nativeCall("selector", args...)` bridge to native functions
 
-```bash
-cargo run -p swiftvm-cli -- test-reload/test-reload/Logic.swift
-```
-
-## Supported Swift syntax in source files
-
-The Swift frontend compiles a subset of Swift into VM bytecode:
-
-- Top-level `var` declarations with string, integer, or boolean values
-- Functions with `func name() -> Type { }` syntax
-- Local `let` and `var` bindings
-- Assignment (`name = expr`)
-- Arithmetic and comparison operators (`+ - * / == < > <= >=`)
-- Logical operators (`&& ||`)
-- `if / else` control flow
-- `for i in a..<b` and `for i in a...b` range loops
-- Function calls with arguments
-- `String()` type conversion
-- Native bridge calls with `nativeCall("selector", args...)`
-
-## How it works internally
-
-1. The CLI reads your `.swift` file and passes it to `swiftvm-frontend`.
-2. The frontend uses SwiftSyntax to parse the file and emit bytecode instructions.
-3. The CLI loads the bytecode into the Rust VM and executes the `main` function.
-4. After each execution tick, the CLI writes all VM global variables to `/tmp/swiftvm-state.json` as a JSON object.
-5. The iOS app polls that file every 300ms and updates `@Published` state when it detects a change.
-6. SwiftUI re-renders any views that depend on the changed values.
-
-When you save the source file, the file watcher triggers a recompile. The hot-reload differ compares the old and new bytecode programs. If only function bodies or state values changed, it performs a light reload (patches in place, preserves live state). If function signatures changed, it requires a hard reload.
+State is written to `/tmp/swiftvm-state.json` and can be read from any iOS app via `SwiftVMBridge.swift`.
 
 ## Current limitations
 
-- The bridge uses a file on disk (`/tmp`), which only works in the iOS Simulator. A device build would need a network or embedded VM approach.
-- The Swift frontend supports a subset of Swift, not the full language.
-- SwiftUI view structure (adding or removing views) still requires an Xcode rebuild. Only data-driven properties (text, colors, sizes, counts) can be hot-reloaded.
-- The VM does not yet support closures, classes, or protocol conformances.
+- Hot-reload only works in the iOS Simulator (`/tmp` is shared between host and Simulator process). Device support would require a network transport.
+- Adding or removing SwiftUI views still requires an Xcode rebuild. Only existing string literals can be patched live.
+- The Rust extractor uses line-level string parsing. Multi-line string literals and string interpolation are not extracted.
 
 ## Running tests
 

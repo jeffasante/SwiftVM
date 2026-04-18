@@ -8,7 +8,7 @@ var padding = "30"
 var subtitleText = "i am jeffrey"
 
 // MARK: - Logic State
-var count = 99
+var count = 89
 
 func main() -> String {
     return "Handled by JSON bridge"

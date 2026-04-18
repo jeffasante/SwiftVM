@@ -947,13 +947,107 @@ final class Lowerer {
     }
 }
 
+// MARK: - SwiftUI View Config Extraction
+
+struct ViewConfigEntry {
+    let key: String
+    let value: String
+}
+
+final class ViewConfigExtractor: SyntaxVisitor {
+    let fileName: String
+    var entries: [ViewConfigEntry] = []
+    private var currentStruct: String?
+
+    init(fileName: String) {
+        self.fileName = fileName
+        super.init(viewMode: .sourceAccurate)
+    }
+
+    override func visit(_ node: StructDeclSyntax) -> SyntaxVisitorContinueKind {
+        currentStruct = node.name.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return .visitChildren
+    }
+
+    override func visitPost(_ node: StructDeclSyntax) {
+        currentStruct = nil
+    }
+
+    override func visit(_ node: FunctionCallExprSyntax) -> SyntaxVisitorContinueKind {
+        // Handle: Text("..."), Label("...", ...)
+        if let identExpr = node.calledExpression.as(DeclReferenceExprSyntax.self) {
+            let name = identExpr.baseName.text
+            if ["Text", "Label"].contains(name) {
+                if let firstArg = node.arguments.first,
+                   let stringLit = firstArg.expression.as(StringLiteralExprSyntax.self) {
+                    let value = stringLit.segments.description
+                    let prefix = currentStruct.map { "\($0)." } ?? ""
+                    entries.append(ViewConfigEntry(
+                        key: "\(prefix)\(name).\(value)",
+                        value: value
+                    ))
+                }
+            }
+        }
+
+        // Handle: .navigationTitle("..."), .font(...), etc.
+        if let memberAccess = node.calledExpression.as(MemberAccessExprSyntax.self) {
+            let modifier = memberAccess.declName.baseName.text
+            let trackedModifiers = [
+                "navigationTitle", "navigationSubtitle",
+                "tabItem", "badge",
+                "accessibilityLabel", "accessibilityHint",
+                "confirmationDialog", "alert",
+                "headerProminence"
+            ]
+            if trackedModifiers.contains(modifier) {
+                if let firstArg = node.arguments.first,
+                   let stringLit = firstArg.expression.as(StringLiteralExprSyntax.self) {
+                    let value = stringLit.segments.description
+                    let prefix = currentStruct.map { "\($0)." } ?? ""
+                    entries.append(ViewConfigEntry(
+                        key: "\(prefix)\(modifier)",
+                        value: value
+                    ))
+                }
+            }
+        }
+
+        return .visitChildren
+    }
+}
+
+func extractViewConfig(source: String, fileName: String) -> [ViewConfigEntry] {
+    let tree = SwiftParser.Parser.parse(source: source)
+    let extractor = ViewConfigExtractor(fileName: fileName)
+    extractor.walk(tree)
+    return extractor.entries
+}
+
+func viewConfigToJSON(_ entries: [ViewConfigEntry]) -> String {
+    var dict: [String: String] = [:]
+    for entry in entries {
+        dict[entry.key] = entry.value
+    }
+    // Simple JSON serialization without Foundation's JSONSerialization
+    let pairs = dict.sorted(by: { $0.key < $1.key }).map { key, value in
+        let escapedKey = key.replacingOccurrences(of: "\"", with: "\\\"")
+        let escapedVal = value.replacingOccurrences(of: "\"", with: "\\\"")
+        return "  \"\(escapedKey)\": \"\(escapedVal)\""
+    }
+    return "{\n\(pairs.joined(separator: ",\n"))\n}"
+}
+
+// MARK: - Entry Point
+
 let args = CommandLine.arguments
 if args.count < 2 {
-    fputs("usage: swiftvm-frontend <swift-source-file>\n", stderr)
+    fputs("usage: swiftvm-frontend [--view-config] <swift-source-file>\n", stderr)
     exit(2)
 }
 
-let sourcePath = args[1]
+let viewConfigMode = args.contains("--view-config")
+let sourcePath = args.first(where: { !$0.starts(with: "-") && $0 != args[0] })!
 let source: String
 
 do {
@@ -963,8 +1057,15 @@ do {
     exit(1)
 }
 
-let states = extractStateDecls(source)
-let functions = parseFunctions(source)
-let lowerer = Lowerer()
-let svm = lowerer.lower(functions: functions, states: states)
-print(svm)
+if viewConfigMode {
+    let fileName = (sourcePath as NSString).lastPathComponent
+        .replacingOccurrences(of: ".swift", with: "")
+    let entries = extractViewConfig(source: source, fileName: fileName)
+    print(viewConfigToJSON(entries))
+} else {
+    let states = extractStateDecls(source)
+    let functions = parseFunctions(source)
+    let lowerer = Lowerer()
+    let svm = lowerer.lower(functions: functions, states: states)
+    print(svm)
+}

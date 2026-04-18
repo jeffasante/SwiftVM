@@ -15,3 +15,7 @@ notes.md
 # Application bridge artifacts
 /tmp/swiftvm-state.json
 /tmp/swiftvm-output.txt
+
+
+.github/
+samples/swift/sample-food-truck-main/
